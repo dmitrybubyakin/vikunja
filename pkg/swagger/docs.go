@@ -4151,7 +4151,7 @@ const docTemplate = `{
                         "JWTKeyAuth": []
                     }
                 ],
-                "description": "Returns a single task identified by its per-project index. Useful when resolving human-readable references like \"PROJ-42\" to a canonical task object. Note that task indexes are reassigned when a task is moved between projects, so long-lived references should use the returned task id instead.",
+                "description": "Returns a single task identified by its per-project index. Useful when resolving human-readable references like \"PROJ-42\" to a canonical task object. The ` + "`" + `project` + "`" + ` path parameter accepts either a numeric project id or the project's identifier (e.g. \"PROJ\"); values consisting solely of digits are always interpreted as ids. Note that task indexes are reassigned when a task is moved between projects, so long-lived references should use the returned task id instead.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4164,8 +4164,8 @@ const docTemplate = `{
                 "summary": "Get one task by its per-project index",
                 "parameters": [
                     {
-                        "type": "integer",
-                        "description": "The project ID",
+                        "type": "string",
+                        "description": "The project id or the project's identifier",
                         "name": "project",
                         "in": "path",
                         "required": true
@@ -9790,8 +9790,7 @@ const docTemplate = `{
                     "enum": [
                         "none",
                         "manual",
-                        "filter",
-                        "manual"
+                        "filter"
                     ]
                 },
                 "created": {
@@ -9828,7 +9827,9 @@ const docTemplate = `{
                 },
                 "title": {
                     "description": "The title of this view",
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 250,
+                    "minLength": 1
                 },
                 "updated": {
                     "description": "A timestamp when this view was updated. You cannot change this value.",
@@ -11192,6 +11193,9 @@ const docTemplate = `{
         "v1.vikunjaInfos": {
             "type": "object",
             "properties": {
+                "allow_icon_changes": {
+                    "type": "boolean"
+                },
                 "auth": {
                     "$ref": "#/definitions/v1.authInfo"
                 },
