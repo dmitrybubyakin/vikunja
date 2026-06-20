@@ -24,7 +24,7 @@ const Logo = computed(() => configStore.allowIconChanges
 	: LogoFull)
 
 const CustomLogo = computed(() => {
-	const lightLogo = window.CUSTOM_LOGO_URL
+	const lightLogo = window.CUSTOM_LOGO_URL || '/src/assets/logo.jpg'
 	const darkLogo = window.CUSTOM_LOGO_URL_DARK
 
 	if (!lightLogo && !darkLogo) return ''
@@ -56,5 +56,6 @@ const CustomLogo = computed(() => {
 	color: var(--logo-text-color);
 	max-inline-size: 168px;
 	max-block-size: 48px;
+	border-radius: 9999px;
 }
 </style>
