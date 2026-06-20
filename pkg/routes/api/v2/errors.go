@@ -20,12 +20,15 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"code.vikunja.io/api/pkg/log"
+	"code.vikunja.io/api/pkg/models"
 	"code.vikunja.io/api/pkg/modules/auth"
 	"code.vikunja.io/api/pkg/web"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/labstack/echo/v5"
 )
 
 // authFromCtx retrieves the authed user from a Huma handler context,
@@ -67,7 +70,44 @@ func translateDomainError(err error) error {
 		}
 		return se
 	}
+	// v2 maps validation failures to 422 (not v1's 412) so a govalidator failure
+	// looks identical to Huma's own schema validation. ValidationHTTPError isn't an
+	// HTTPErrorProcessor (the embedded field shadows the method), so it lands here.
+	var ve models.ValidationHTTPError
+	if errors.As(err, &ve) {
+		se := huma.NewError(http.StatusUnprocessableEntity, ve.Error(), invalidFieldDetails(ve.InvalidFields)...)
+		if vm, ok := se.(*vikunjaErrorModel); ok {
+			vm.Code = ve.GetCode()
+		}
+		return se
+	}
+	// Shared transport-agnostic cores (e.g. auth.RefreshSession) signal HTTP
+	// semantics with *echo.HTTPError. v1 lets echo's error handler render it;
+	// without this it would fall through as a 500 on v2.
+	var he *echo.HTTPError
+	if errors.As(err, &he) {
+		msg := he.Message
+		if msg == "" {
+			msg = http.StatusText(he.Code)
+		}
+		return huma.NewError(he.Code, msg)
+	}
 	return err
+}
+
+// invalidFieldDetails turns ValidationHTTPError's invalid_fields into RFC 9457
+// error details. Entries come in two shapes — govalidator's "field: message" and
+// model call sites' bare field names — and both must yield a Location.
+func invalidFieldDetails(fields []string) []error {
+	details := make([]error, 0, len(fields))
+	for _, f := range fields {
+		name, msg, ok := strings.Cut(f, ": ")
+		if !ok {
+			msg = "Invalid data"
+		}
+		details = append(details, &huma.ErrorDetail{Location: "body." + name, Message: msg})
+	}
+	return details
 }
 
 // vikunjaErrorModel extends Huma's RFC 9457 body with Vikunja's numeric

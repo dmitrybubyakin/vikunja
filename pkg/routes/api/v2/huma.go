@@ -19,7 +19,10 @@ package apiv2
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"code.vikunja.io/api/pkg/config"
@@ -31,6 +34,36 @@ import (
 	"github.com/labstack/echo/v5"
 )
 
+// formURLEncodedContentType is the content type the OAuth token endpoint accepts
+// in addition to JSON, per RFC 6749.
+const formURLEncodedContentType = "application/x-www-form-urlencoded"
+
+// formURLEncodedFormat lets Huma bind application/x-www-form-urlencoded request
+// bodies into the same json-tagged structs it uses for JSON: the form values are
+// re-marshaled to JSON and decoded via the standard path. Only string scalars
+// are produced, which is all the form-encoded endpoints (OAuth token) need.
+var formURLEncodedFormat = huma.Format{
+	Marshal: func(io.Writer, any) error {
+		// Responses are always JSON; this format is request-body only.
+		return huma.ErrUnknownContentType
+	},
+	Unmarshal: func(data []byte, v any) error {
+		values, err := url.ParseQuery(string(data))
+		if err != nil {
+			return err
+		}
+		flat := make(map[string]string, len(values))
+		for key := range values {
+			flat[key] = values.Get(key)
+		}
+		raw, err := json.Marshal(flat)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(raw, v)
+	},
+}
+
 // GroupPrefix is the URL prefix the Echo group for /api/v2 is mounted at.
 const GroupPrefix = "/api/v2"
 
@@ -41,8 +74,17 @@ func NewAPI(e *echo.Echo, g *echo.Group) huma.API {
 	cfg.OpenAPIPath = "/openapi"
 	// Huma's built-in docs would load from unpkg.com — we serve Scalar locally instead.
 	cfg.DocsPath = ""
-	// Match v1's permissive partial-update convention; govalidator enforces real rules.
+	// Real presence/format rules live in `valid:` tags, enforced by govalidator in
+	// the Register wrapper; leave the schema permissive so partial updates match v1.
 	cfg.FieldsOptionalByDefault = true
+	// Accept application/x-www-form-urlencoded bodies (the OAuth token endpoint)
+	// alongside JSON. Copy the default map so we don't mutate the package global.
+	formats := make(map[string]huma.Format, len(cfg.Formats)+1)
+	for ct, f := range cfg.Formats {
+		formats[ct] = f
+	}
+	formats[formURLEncodedContentType] = formURLEncodedFormat
+	cfg.Formats = formats
 
 	api := humaecho5.NewWithGroup(e, g, GroupPrefix, cfg)
 	oapi := api.OpenAPI()
@@ -61,6 +103,14 @@ func NewAPI(e *echo.Echo, g *echo.Group) huma.API {
 		Type:        "http",
 		Scheme:      "bearer",
 		Description: "Vikunja API token (tk_ prefix) with scoped permissions. Created via /api/v1/tokens.",
+	}
+	// HTTP Basic, used only by the notifications Atom feed: feed readers can't
+	// carry a bearer header, so the feed accepts the API token as the Basic
+	// password (username = token owner). See notifications_feed.go.
+	oapi.Components.SecuritySchemes["BasicAuth"] = &huma.SecurityScheme{
+		Type:        "http",
+		Scheme:      "basic",
+		Description: "HTTP Basic auth used by the notifications Atom feed: the username is the token owner and the password is a feeds-scoped Vikunja API token (tk_ prefix).",
 	}
 	// Applied globally; public endpoints (spec, docs) opt out with an empty Security list.
 	oapi.Security = []map[string][]string{
@@ -86,6 +136,9 @@ func NewAPI(e *echo.Echo, g *echo.Group) huma.API {
 
 // Register wraps huma.Register with verb-based DefaultStatus: POST → 201,
 // DELETE → 204. Anything else (including an explicit op.DefaultStatus) is untouched.
+//
+// It also runs govalidator before the handler — i.e. before handler.Do*'s
+// permission check — so v2 validates-then-authorizes like v1.
 func Register[I, O any](api huma.API, op huma.Operation, handler func(context.Context, *I) (*O, error)) {
 	if op.DefaultStatus == 0 {
 		switch op.Method {
@@ -95,7 +148,13 @@ func Register[I, O any](api huma.API, op huma.Operation, handler func(context.Co
 			op.DefaultStatus = http.StatusNoContent
 		}
 	}
-	huma.Register(api, op, handler)
+	wrapped := func(ctx context.Context, in *I) (*O, error) {
+		if err := validateInputBody(in); err != nil {
+			return nil, translateDomainError(err)
+		}
+		return handler(ctx, in)
+	}
+	huma.Register(api, op, wrapped)
 }
 
 // EnableAutoPatch synthesises a PATCH for every resource that already
